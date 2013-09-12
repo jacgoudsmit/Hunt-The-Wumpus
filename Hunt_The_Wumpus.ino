@@ -77,7 +77,7 @@
 // the RoboBrrd hardware attached. Also, the effects can be disabled at
 // runtime so you can play the plain no-effects version even if you do have
 // the RoboBrrd hardware attached.
-#define WUMPUS_ROBOBRRD
+//#define WUMPUS_ROBOBRRD
 
 
 //---------------------------------------------------------------------------
@@ -89,7 +89,7 @@
 // values into the EEPROM. Basically it makes it very easy to run the same
 // sketch on multiple RoboBrrds even if they have different calibration
 // values, or even if the wiring is different.
-#define WUMPUS_ROBOBRRD_EEPROM
+//#define WUMPUS_ROBOBRRD_EEPROM
 
 
 //---------------------------------------------------------------------------
@@ -105,7 +105,7 @@
 //
 // Uncomment this if you reversed the Red and Blue lines of the LCD 
 // backlight.
-#define OHPOOPREVERSEDLCDBACKLIGHT
+//#define OHPOOPREVERSEDLCDBACKLIGHT
 
 
 /////////////////////////////////////////////////////////////////////////////
@@ -558,7 +558,7 @@ void sfxcheers(void)
 void setLight(byte bits) 
 {
 #ifdef OHPOOPREVERSEDLCDBACKLIGHT
-  //                                       0  1  2  3  4  5  6  7
+  //                                     0  1  2  3  4  5  6  7
   static const byte reversedcolors[] = { 0, 4, 2, 6, 1, 5, 3, 7 };
 #endif
 
@@ -1121,7 +1121,7 @@ void animate_shooting_arrow()
     }
     else 
     {
-      detachservos();
+      ROBOSFX(detachservos());
       state = arrow_missed;
     }
   }
