@@ -156,6 +156,11 @@
 #include <Adafruit_RGBLCDShield.h>
 
 
+//---------------------------------------------------------------------------
+// Other includes
+#include <Streaming.h>
+
+
 /////////////////////////////////////////////////////////////////////////////
 // MACROS
 /////////////////////////////////////////////////////////////////////////////
@@ -303,12 +308,44 @@ const byte icons[4][8] =
 
 
 //---------------------------------------------------------------------------
+//! Settings
+#ifdef WUMPUS_ROBOBRRD
+#ifdef WUMPUS_ROBOBRRD_EEPROM
+
+// RoboBrrd pins and values
+EEPROM_item<RoboBrrd::Pins>   pins(RoboBrrd::DefaultPins);
+EEPROM_item<RoboBrrd::Values> values(RoboBrrd::DefaultValues);
+
+// Name of the RoboBrrd
+EEPROM_item<char[17]>         myname;
+
+// Enable 12 hour time display
+EEPROM_item<boolean>          enable12h(true);
+
+// Screensaver parameters
+#ifdef ROBOBRRD_HAS_GPS
+EEPROM_item<int>              screensaver_brightness_threshold(100);
+EEPROM_item<unsigned long>    screensaver_clock_timeout(15000);
+#endif
+
+#else
+
+#define myname F("RoboBrrd")
+#define enable12h (true)
+
+#ifdef ROBOBRRD_HAS_GPS
+#define screensaver_brightness_threshold (100)
+#define screensaver_clock_timeout (15000)
+#endif
+
+#endif
+#endif
+
+
+//---------------------------------------------------------------------------
 //! Robobrrd instance
 #ifdef WUMPUS_ROBOBRRD
 #ifdef WUMPUS_ROBOBRRD_EEPROM
-// The settings that are saved to the EEPROM are contained in this
-EEPROM_item<RoboBrrd::Pins>   pins(RoboBrrd::DefaultPins);
-EEPROM_item<RoboBrrd::Values> values(RoboBrrd::DefaultValues);
 RoboBrrd robobrrd(values, pins);
 #else
 RoboBrrd robobrrd;
@@ -392,6 +429,13 @@ Adafruit_RGBLCDShield lcd = Adafruit_RGBLCDShield();
 //---------------------------------------------------------------------------
 //! The bitmask of currently clicked buttons.
 uint8_t clicked_buttons;
+
+
+//---------------------------------------------------------------------------
+//! Screen saver data
+unsigned long       screensaver_timestamp;
+byte                screensaver_light;
+bool                screensaver_on;
 
 
 /////////////////////////////////////////////////////////////////////////////
@@ -557,6 +601,8 @@ void sfxcheers(void)
 // When using RoboBrrd, set the color of the eyes too 
 void setLight(byte bits) 
 {
+  screensaver_light = bits;
+
 #ifdef OHPOOPREVERSEDLCDBACKLIGHT
   //                                     0  1  2  3  4  5  6  7
   static const byte reversedcolors[] = { 0, 4, 2, 6, 1, 5, 3, 7 };
@@ -587,6 +633,13 @@ void read_button_clicks()
   uint8_t buttons = lcd.readButtons();
   clicked_buttons = (last_buttons ^ buttons) & (~buttons);
   last_buttons = buttons;
+
+#if defined(WUMPUS_ROBOBRRD) && defined(ROBOBRRD_HAS_GPS)
+  if (clicked_buttons != 0)
+  {
+    reset_screensaver();
+  }
+#endif
 }
 
 
@@ -728,6 +781,13 @@ void animate_splash_screen()
   }
 
 #ifdef WUMPUS_ROBOBRRD 
+#ifdef ROBOBRRD_HAS_GPS
+  if (time - last_state_change_time > 30000)
+  {
+    state = show_clock;
+  }
+#endif
+
   if (clicked_buttons & BUTTON_UP) 
   {
     robobrrd_sfx = true;
@@ -1221,6 +1281,207 @@ void game_over_delay()
 
 
 /////////////////////////////////////////////////////////////////////////////
+// CLOCK STATES
+/////////////////////////////////////////////////////////////////////////////
+
+
+#ifdef WUMPUS_ROBOBRRD
+#ifdef ROBOBRRD_HAS_GPS
+//---------------------------------------------------------------------------
+//! Reset screensaver
+void reset_screensaver()
+{
+  screensaver_timestamp = time;
+
+  if (screensaver_on)
+  {
+    screensaver_on = false;
+
+    lcd.display();
+    setLight(screensaver_light);
+  }
+}
+
+
+//---------------------------------------------------------------------------
+//! Activate screen saver if time has expired
+void check_screensaver(unsigned long duration) 
+{
+  // If there's enough light, the screensaver should stay off
+  if ( ( (robobrrd.GetLDR(RoboBrrd::Left ) >= screensaver_brightness_threshold)
+      || (robobrrd.GetLDR(RoboBrrd::Right) >= screensaver_brightness_threshold)))
+  {
+    if (screensaver_on)
+    {
+      reset_screensaver();
+    }
+  }
+  else
+  {
+    if ( (!screensaver_on) 
+      && (time - screensaver_timestamp >= duration))
+    {
+      screensaver_on = true;
+
+      lcd.noDisplay();
+      lcd.setBacklight(0); // Don't use setLight here!
+      robobrrd.Led(RoboBrrd::SidesBoth, false, false, false);
+    }
+  }
+}
+
+
+//---------------------------------------------------------------------------
+//! Convert hour to AM/PM notation if necessary
+byte format_hour(byte hour)
+{
+  byte result = hour;
+
+  if (enable12h)
+  {
+    result = (result == 0 ? 12 : (result > 12 ? result - 12 : result));
+  }
+
+  return result;
+}
+
+
+//---------------------------------------------------------------------------
+//! Show the time on current line
+NoAutoProto(
+void line_time(tmElements_t &t))
+{
+  byte h = format_hour(t.Hour);
+  lcd << (h < 10 ? F("   ") : F("  ")) << h
+    << F(":") << (t.Minute < 10 ? F("0") : F("")) << t.Minute
+    << (t.Second < 10 ? F(":0") : F(":")) << t.Second
+    << (enable12h ? 
+      (t.Hour >= 12 ? F(" PM   ") : F(" AM   ")) : F("      "));
+
+}
+
+
+//---------------------------------------------------------------------------
+//! Show the date on current line
+NoAutoProto(
+void line_date(tmElements_t &t))
+{
+  lcd << dayShortStr(t.Wday) 
+    << (t.Day < 10 ? F(" 0") : F(" ")) << t.Day 
+    << F("-") << monthShortStr(t.Month)
+    << F("-") << tmYearToCalendar(t.Year) << F(" ");
+}
+
+
+//---------------------------------------------------------------------------
+//! Show the temperature on current line
+void line_temperature()
+{
+  unsigned u = (robobrrd.GetFahrenheit() + 5) / 10;
+
+  lcd << F("Temperature ") << (u < 100 ? F(" ") : F("")) 
+    << (u < 10 ? F(" ") : F("")) << u << F("F");
+}
+
+
+//---------------------------------------------------------------------------
+//! Show the amount of light (just for debugging and calibrating)
+void line_light()
+{
+  unsigned left = robobrrd.GetLDR(RoboBrrd::Left);
+  unsigned right = robobrrd.GetLDR(RoboBrrd::Right);
+
+  lcd << F("Light: ") << left << F("/") << right << "      ";
+}
+
+
+//---------------------------------------------------------------------------
+//! Show the GPS status on current line
+void line_gps_state()
+{
+  switch (robobrrd.m_gps_state)
+  {
+  case RoboBrrd::GPSStateUnknown:   lcd << F("GPS Disconnected"); break;
+  case RoboBrrd::GPSStateOnline:    lcd << F("GPS No data yet "); break;
+  case RoboBrrd::GPSStateData:      lcd << F("GPS Insuff. data"); break;
+  case RoboBrrd::GPSStateValidData: lcd << F("GPS No date/time"); break;
+  case RoboBrrd::GPSStateGotTime:   lcd << F("GPS No date yet "); break;
+  case RoboBrrd::GPSStateGotDate:   lcd << F("GPS Receiving OK"); break;
+
+  default:                          
+    lcd << F("GPS ????????????");
+  }
+}
+
+
+//---------------------------------------------------------------------------
+//! Show the time
+void show_clock()
+{
+  static time_t prevtime = 0;
+  time_t newtime = now();
+
+  if (newtime != prevtime)
+  {
+    prevtime = newtime;
+
+    tmElements_t t;
+    breakTime(newtime, t);
+
+    static byte seq = 0;
+    static byte timesdisplayed;
+
+    // If we just changed state, make sure the message is shown long enough
+    if (time - last_state_change_time < 1000)
+    {
+      timesdisplayed = 0;
+    }
+
+    lcd.setCursor(0, 0);
+
+    if (++timesdisplayed == 5)
+    {
+      timesdisplayed = 0;
+      seq++;
+    }
+
+    do 
+    {
+      switch(seq)
+      {
+      case 0: line_date(t);       break;
+      case 1: line_temperature(); break;
+      case 2: line_light();       break;
+      case 3: line_gps_state();   break;
+      default:
+        seq = 0; continue;
+      }
+    } while(0);
+
+    lcd.setCursor(0, 1);
+    if (timeStatus() == timeSet)
+    {
+      line_time(t);
+
+      check_screensaver(screensaver_clock_timeout);
+    }
+    else
+    {
+      line_gps_state(); 
+      delay(1000);
+    }
+  }
+
+  if (clicked_buttons & BUTTON_SELECT)
+  {
+    state = begin_splash_screen;
+  }
+}
+#endif
+#endif
+
+
+/////////////////////////////////////////////////////////////////////////////
 // ARDUINO TOP-LEVEL FUNCTIONS
 /////////////////////////////////////////////////////////////////////////////
 
@@ -1242,7 +1503,11 @@ void setup()
   EEPROM_mgr::Begin();
 
 #endif // WUMPUS_ROBOBRRD_EEPROM
-  robobrrd.Attach(false);
+  robobrrd.Attach(false
+#ifdef ROBOBRRD_HAS_GPS
+    , true
+#endif
+    );
 #else
   // LCD has 16 columns & 2 rows
   lcd.begin(16, 2);
@@ -1255,8 +1520,16 @@ void setup()
   lcd.createChar(PIT_ICON_IDX,    icons[PIT_ICON_IDX]);
   lcd.createChar(ARROW_ICON_IDX,  icons[ARROW_ICON_IDX]);
 
+  lcd.clear();
+
+  setLight(TEAL);
+
   // Initial game state
+#if defined(WUMPUS_ROBOBRRD) && defined(ROBOBRRD_HAS_GPS)
+  state = show_clock;
+#else
   state = begin_splash_screen;
+#endif
 }
 
 
@@ -1274,6 +1547,9 @@ void loop()
   {
     last_state = state;
     last_state_change_time = time;
+#if defined(WUMPUS_ROBOBRRD) && defined(ROBOBRRD_HAS_GPS)
+    reset_screensaver();
+#endif
   }
 
   // Read in which buttons were clicked
