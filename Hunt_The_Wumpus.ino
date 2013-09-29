@@ -97,8 +97,15 @@
 //
 // Uncomment the following to generate some debug output. Normally this
 // should be off. This is an unfinished feature.
-//#define DEBUG
+//#define WUMPUS_DEBUG
 
+
+//---------------------------------------------------------------------------
+//! Disable WUMPUS game
+//
+// Uncomment this to disable the WUMPUS code. This may be necessary if the
+// sketch gets too large with debugging turned on.
+//#define WUMPUS_NOWUMPUS
 
 //---------------------------------------------------------------------------
 //! Enable fix for mis-wired LCD backlight LED's
@@ -157,6 +164,13 @@
 
 
 //---------------------------------------------------------------------------
+// Menu system
+#if defined(WUMPUS_ROBOBRRD) && defined(WUMPUS_ROBOBRRD_EEPROM)
+#include <LcdMenu.h>
+#endif
+
+
+//---------------------------------------------------------------------------
 // Other includes
 #include <Streaming.h>
 
@@ -177,9 +191,9 @@
 
 //---------------------------------------------------------------------------
 //! Debug macros
-#ifdef DEBUG
-#define PRINT(x) do { Serial.print(x); delay(1000); } while(0)
-#define PRINTLN(x) do { Serial.println(x); delay(1000); } while(0)
+#ifdef WUMPUS_DEBUG
+#define PRINT(x)   do { Serial.print(x);   Serial.flush(); } while(0)
+#define PRINTLN(x) do { Serial.println(x); Serial.flush(); } while(0)
 #else
 #define PRINT(x)
 #define PRINTLN(x)
@@ -243,11 +257,63 @@ enum BackLightColor
 };
 
 
+//---------------------------------------------------------------------------
+//! Screensaver state enum
+enum ScreensaverState
+{
+  SCREENSAVER_DISABLED,                 // Room is too bright
+  SCREENSAVER_OFF,                      // Waiting for timeout
+  SCREENSAVER_ON,                       // Screensaver active
+};
+
+//---------------------------------------------------------------------------
+//! Settings
+#ifdef WUMPUS_ROBOBRRD
+struct Settings
+{
+  // RoboBrrd pins and values
+  RoboBrrd::Pins      m_pins;
+  RoboBrrd::Values    m_values;
+
+  // Name of the RoboBrrd
+  char                m_myname[17];
+
+  // Enable 12 hour time display
+  boolean             m_enable12h;
+
+  // Clock/Screensaver parameters
+#ifdef ROBOBRRD_HAS_GPS
+  byte                m_clock_color;
+  int                 m_ss_on_low_brightness_threshold;
+  int                 m_ss_off_hi_brightness_threshold;
+  unsigned long       m_ss_timeout;
+#endif
+
+  Settings()
+    : m_pins(RoboBrrd::DefaultPins)
+    , m_values(RoboBrrd::DefaultValues)
+    , m_enable12h(true)
+#ifdef ROBOBRRD_HAS_GPS
+    , m_clock_color(GREEN)
+    , m_ss_on_low_brightness_threshold(100)
+    , m_ss_off_hi_brightness_threshold(200)
+    , m_ss_timeout(15000)
+#endif
+  {
+    // This is necessary in GCC because of this bug:
+    // http://gcc.gnu.org/bugzilla/show_bug.cgi?id=43453
+    strcpy(m_myname, "    RoboBrrd    ");
+  }
+};
+#endif
+
+
 /////////////////////////////////////////////////////////////////////////////
 // DATA
 /////////////////////////////////////////////////////////////////////////////
 
 
+#ifndef WUMPUS_NOWUMPUS
 //---------------------------------------------------------------------------
 //! Map of the cavern layout.
 //
@@ -308,35 +374,42 @@ const byte icons[4][8] =
 
 
 //---------------------------------------------------------------------------
+//! Index in the map of the room the player is in.
+uint8_t player_room;
+
+
+//---------------------------------------------------------------------------
+//! Hazards in each room
+uint8_t hazards[20];
+
+
+//---------------------------------------------------------------------------
+//! Count of how many arrows the player has left.
+uint8_t arrow_count;
+
+
+//---------------------------------------------------------------------------
+//! Index in the map of the room the arrow is shot into.
+//
+// This index is only valid/current during the state changes
+// associated with firing an arrow into a room.
+uint8_t arrow_room;
+
+#endif // WUMPUS_NOWUMPUS
+
+
+//---------------------------------------------------------------------------
 //! Settings
 #ifdef WUMPUS_ROBOBRRD
 #ifdef WUMPUS_ROBOBRRD_EEPROM
 
-// RoboBrrd pins and values
-EEPROM_item<RoboBrrd::Pins>   pins(RoboBrrd::DefaultPins);
-EEPROM_item<RoboBrrd::Values> values(RoboBrrd::DefaultValues);
-
-// Name of the RoboBrrd
-EEPROM_item<char[17]>         myname;
-
-// Enable 12 hour time display
-EEPROM_item<boolean>          enable12h(true);
-
-// Screensaver parameters
-#ifdef ROBOBRRD_HAS_GPS
-EEPROM_item<int>              screensaver_brightness_threshold(100);
-EEPROM_item<unsigned long>    screensaver_clock_timeout(15000);
-#endif
+EEPROM_item<Settings> settings;
+#define SET(field) (settings.m_data.field)
 
 #else
 
-#define myname F("RoboBrrd")
-#define enable12h (true)
-
-#ifdef ROBOBRRD_HAS_GPS
-#define screensaver_brightness_threshold (100)
-#define screensaver_clock_timeout (15000)
-#endif
+Settings settings;
+#define SET(field) (settings.field)
 
 #endif
 #endif
@@ -345,11 +418,7 @@ EEPROM_item<unsigned long>    screensaver_clock_timeout(15000);
 //---------------------------------------------------------------------------
 //! Robobrrd instance
 #ifdef WUMPUS_ROBOBRRD
-#ifdef WUMPUS_ROBOBRRD_EEPROM
-RoboBrrd robobrrd(values, pins);
-#else
-RoboBrrd robobrrd;
-#endif
+RoboBrrd robobrrd(SET(m_values), SET(m_pins));
 #endif
 
 
@@ -372,29 +441,6 @@ boolean ServosAttached = false;
 #ifdef WUMPUS_ROBOBRRD
 RoboBrrd::Pos lastpos[RoboBrrd::NumServos];
 #endif
-
-
-//---------------------------------------------------------------------------
-//! Index in the map of the room the player is in.
-uint8_t player_room;
-
-
-//---------------------------------------------------------------------------
-//! Hazards in each room
-uint8_t hazards[20];
-
-
-//---------------------------------------------------------------------------
-//! Count of how many arrows the player has left.
-uint8_t arrow_count;
-
-
-//---------------------------------------------------------------------------
-//! Index in the map of the room the arrow is shot into.
-//
-// This index is only valid/current during the state changes
-// associated with firing an arrow into a room.
-uint8_t arrow_room;
 
 
 //---------------------------------------------------------------------------
@@ -435,7 +481,7 @@ uint8_t clicked_buttons;
 //! Screen saver data
 unsigned long       screensaver_timestamp;
 byte                screensaver_light;
-bool                screensaver_on;
+ScreensaverState    screensaver_state;
 
 
 /////////////////////////////////////////////////////////////////////////////
@@ -635,14 +681,16 @@ void read_button_clicks()
   last_buttons = buttons;
 
 #if defined(WUMPUS_ROBOBRRD) && defined(ROBOBRRD_HAS_GPS)
-  if (clicked_buttons != 0)
+  if ((clicked_buttons != 0) && (screensaver_state == SCREENSAVER_ON))
   {
     reset_screensaver();
+    clicked_buttons = 0;
   }
 #endif
 }
 
 
+#ifndef WUMPUS_NOWUMPUS
 //---------------------------------------------------------------------------
 //! Print a cave number to the lcd.
 //
@@ -724,6 +772,8 @@ NoAutoProto(
   }
 }
 
+#endif // WUMPUS_NOWUMPUS
+
 
 /////////////////////////////////////////////////////////////////////////////
 // STATE FUNCTIONS
@@ -735,6 +785,7 @@ NoAutoProto(
 //===========================================================================
 
 
+#ifndef WUMPUS_NOWUMPUS
 //---------------------------------------------------------------------------
 //! Initial game state, draw the splash screen.
 void begin_splash_screen() 
@@ -784,7 +835,7 @@ void animate_splash_screen()
 #ifdef ROBOBRRD_HAS_GPS
   if (time - last_state_change_time > 30000)
   {
-    state = show_clock;
+    state = init_clock;
   }
 #endif
 
@@ -1279,6 +1330,8 @@ void game_over_delay()
   }
 }
 
+#endif // WUMPUS_NOWUMPUS
+
 
 /////////////////////////////////////////////////////////////////////////////
 // CLOCK STATES
@@ -1293,9 +1346,9 @@ void reset_screensaver()
 {
   screensaver_timestamp = time;
 
-  if (screensaver_on)
+  if (screensaver_state == SCREENSAVER_ON)
   {
-    screensaver_on = false;
+    screensaver_state = SCREENSAVER_OFF;
 
     lcd.display();
     setLight(screensaver_light);
@@ -1305,28 +1358,44 @@ void reset_screensaver()
 
 //---------------------------------------------------------------------------
 //! Activate screen saver if time has expired
-void check_screensaver(unsigned long duration) 
+void check_screensaver() 
 {
-  // If there's enough light, the screensaver should stay off
-  if ( ( (robobrrd.GetLDR(RoboBrrd::Left ) >= screensaver_brightness_threshold)
-      || (robobrrd.GetLDR(RoboBrrd::Right) >= screensaver_brightness_threshold)))
+  if ( (screensaver_state == SCREENSAVER_OFF) 
+    && (time - screensaver_timestamp >= SET(m_ss_timeout)))
   {
-    if (screensaver_on)
-    {
-      reset_screensaver();
-    }
-  }
-  else
-  {
-    if ( (!screensaver_on) 
-      && (time - screensaver_timestamp >= duration))
-    {
-      screensaver_on = true;
+    screensaver_state = SCREENSAVER_ON;
 
-      lcd.noDisplay();
-      lcd.setBacklight(0); // Don't use setLight here!
-      robobrrd.Led(RoboBrrd::SidesBoth, false, false, false);
-    }
+    lcd.noDisplay();
+    lcd.setBacklight(0); // Don't use setLight here!
+    robobrrd.Led(RoboBrrd::SidesBoth, false, false, false);
+  }
+}
+
+
+//---------------------------------------------------------------------------
+//! Check if we should enable or disable screen saver based on brightness
+void check_brightness()
+{
+  int b1 = robobrrd.GetLDR(RoboBrrd::Left);
+  int b2 = robobrrd.GetLDR(RoboBrrd::Right);
+
+  if (b1 > b2)
+  {
+    int x = b2;
+    b2 = b1;
+    b1 = x;
+  }
+
+  if ( (screensaver_state == SCREENSAVER_DISABLED)
+    && (b1 < SET(m_ss_on_low_brightness_threshold)))
+  {
+    screensaver_state = SCREENSAVER_OFF;
+    check_screensaver();
+  }
+  else if ( (screensaver_state != SCREENSAVER_DISABLED)
+         && (b2 >= SET(m_ss_off_hi_brightness_threshold)))
+  {
+    reset_screensaver();
   }
 }
 
@@ -1337,7 +1406,7 @@ byte format_hour(byte hour)
 {
   byte result = hour;
 
-  if (enable12h)
+  if (SET(m_enable12h))
   {
     result = (result == 0 ? 12 : (result > 12 ? result - 12 : result));
   }
@@ -1355,7 +1424,7 @@ void line_time(tmElements_t &t))
   lcd << (h < 10 ? F("   ") : F("  ")) << h
     << F(":") << (t.Minute < 10 ? F("0") : F("")) << t.Minute
     << (t.Second < 10 ? F(":0") : F(":")) << t.Second
-    << (enable12h ? 
+    << (SET(m_enable12h) ? 
       (t.Hour >= 12 ? F(" PM   ") : F(" AM   ")) : F("      "));
 
 }
@@ -1415,6 +1484,17 @@ void line_gps_state()
 
 
 //---------------------------------------------------------------------------
+//! Init clock
+void init_clock()
+{
+  reset_screensaver();
+  setLight(SET(m_clock_color));
+
+  state = show_clock;
+}
+
+
+//---------------------------------------------------------------------------
 //! Show the time
 void show_clock()
 {
@@ -1449,10 +1529,11 @@ void show_clock()
     {
       switch(seq)
       {
-      case 0: line_date(t);       break;
-      case 1: line_temperature(); break;
-      case 2: line_light();       break;
-      case 3: line_gps_state();   break;
+      case 0: lcd << (SET(m_myname)[0] ? SET(m_myname) : "    RoboBrrd    "); break;
+      case 1: line_date(t);       break;
+      case 2: line_temperature(); break;
+      case 3: line_light();       break;
+      case 4: line_gps_state();   break;
       default:
         seq = 0; continue;
       }
@@ -1463,7 +1544,7 @@ void show_clock()
     {
       line_time(t);
 
-      check_screensaver(screensaver_clock_timeout);
+      check_screensaver();
     }
     else
     {
@@ -1474,10 +1555,209 @@ void show_clock()
 
   if (clicked_buttons & BUTTON_SELECT)
   {
+#ifdef WUMPUS_ROBOBRRD_EEPROM
+    state = init_menu;
+#else
     state = begin_splash_screen;
+#endif
   }
 }
 #endif
+#endif
+
+
+/////////////////////////////////////////////////////////////////////////////
+// CALIBRATION STATES
+/////////////////////////////////////////////////////////////////////////////
+
+
+#if defined(WUMPUS_ROBOBRRD) && defined(WUMPUS_ROBOBRRD_EEPROM)
+
+
+//---------------------------------------------------------------------------
+// Forward declarations for menu item functions
+MenuItemFunc_t 
+  change_nightlight_color,
+  change_state;
+
+
+//---------------------------------------------------------------------------
+// Forward declarations for menu navigation functions
+MenuNavFunc_t 
+  navigate_color;
+
+
+//---------------------------------------------------------------------------
+// Night light - Color menu
+MENUITEMLIST(colormenuitems)
+MENUITEM( "Red",    NULL, NULL )
+MENUITEM( "Green",  NULL, NULL )
+MENUITEM( "Yellow", NULL, NULL )
+MENUITEM( "Blue",   NULL, NULL )
+MENUITEM( "Violet", NULL, NULL )
+MENUITEM( "Teal",   NULL, NULL )
+MENUITEM( "White",  NULL, NULL )
+MENUITEMLISTEND
+
+  Menu colormenu PROGMEM =
+{
+  "Select color", colormenuitems, navigate_color
+};
+
+
+//---------------------------------------------------------------------------
+// Night light menu
+MENUITEMLIST(nightlightmenuitems)
+MENUITEM( "Color", change_nightlight_color, NULL )
+MENUITEM( "Exit",  menu_LeaveMenu, NULL )
+MENUITEMLISTEND
+
+Menu nightlightmenu PROGMEM =
+{
+  "Night light menu", nightlightmenuitems, NULL
+};
+
+
+//---------------------------------------------------------------------------
+// Main menu
+MENUITEMLIST(mainmenuitems)
+MENUITEM( "Show Clock",       change_state, init_clock )
+MENUITEM( "Set Alarm",        NULL, NULL )
+#ifndef WUMPUS_NOWUMPUS
+MENUITEM( "Play Wumpus",      change_state, begin_splash_screen )
+#endif
+MENUITEM( "Night light menu", menu_EnterMenu,   &nightlightmenu )
+MENUITEMLISTEND
+
+ Menu mainmenu PROGMEM =
+{
+  "Main Menu", mainmenuitems, NULL
+};
+
+
+//---------------------------------------------------------------------------
+// Color to change for color menu navigation function
+static byte *pcolortochange;
+
+
+//---------------------------------------------------------------------------
+//! Change night light color from the front panel
+MENUITEMFUNC_PROTO(change_nightlight_color)
+{
+  pcolortochange = (byte *)&SET(m_clock_color);
+
+  menu_EnterMenu(&colormenu);
+}
+
+
+//---------------------------------------------------------------------------
+//! Select a color from the menu
+MENUNAVFUNC_PROTO(navigate_color)
+{
+  if (navmode == MENUNAV_MENU)
+  {
+    if (*pcolortochange < 1)
+    {
+      *pcolortochange = 1;
+    }
+    else if (*pcolortochange > 7)
+    {
+      *pcolortochange = 7;
+    }
+
+    menu_gpCurState->m_itemindex = *pcolortochange - 1;
+  }
+  else
+  {
+    *pcolortochange = menu_gpCurState->m_itemindex + 1;
+  }
+
+  setLight(*pcolortochange);
+
+  if (navmode == MENUNAV_SELECT)
+  {
+    PRINTLN("Storing all settings");
+    EEPROM_mgr::StoreAll();
+  }
+
+  return true;
+}
+
+
+//---------------------------------------------------------------------------
+//! Menu function: change state function
+MENUITEMFUNC_PROTO(change_state)
+{
+  state = (StateFunc_t *)menuparm;
+}
+
+
+//---------------------------------------------------------------------------
+//! Initialize settings
+void init_menu()
+{
+#if defined(WUMPUS_ROBOBRRD) && defined(ROBOBRRD_HAS_GPS)
+  reset_screensaver();
+#endif
+
+  setLight(TEAL);
+  lcd.clear();
+
+  menu_Init(&mainmenu);
+
+  state = do_menu;
+}
+
+
+//---------------------------------------------------------------------------
+//! Process menu
+void do_menu()
+{
+  MenuAction action = MENUACTION_NONE;
+
+  if (clicked_buttons & BUTTON_UP)
+  {
+    action = MENUACTION_PREV;
+  }
+  else if (clicked_buttons & BUTTON_DOWN)
+  {
+    action = MENUACTION_NEXT;
+  }
+  else if (clicked_buttons & BUTTON_SELECT)
+  {
+    action = MENUACTION_SELECT;
+  }
+  else
+  {
+    // Nothing to do here
+  }
+
+  if (action != MENUACTION_NONE)
+  {
+    menu_Process(action);
+  }
+}
+
+
+//---------------------------------------------------------------------------
+//! Show menu string
+NoAutoProto(
+void
+menu_ShowCB(
+  MenuShow displaymode))
+{
+  byte line = 1;
+  prog_char *s = NULL;
+
+  switch (displaymode)
+  {
+  case MENUSHOW_MENU: line = 0; s = menu_gCurMenu.m_menuname; break;
+  case MENUSHOW_ITEM: line = 1; s = menu_gCurItem.m_name;     break;
+  }
+
+  lcd.setCursor(0, line);
+  lcd << s << F("                ");
+}
 #endif
 
 
@@ -1486,11 +1766,9 @@ void show_clock()
 /////////////////////////////////////////////////////////////////////////////
 
 
-//---------------------------------------------------------------------------
-//! Perform one time setup for the game and put it in splash screen state.
 void setup() 
 {
-#ifdef DEBUG
+#ifdef WUMPUS_DEBUG
   Serial.begin(9600);
   delay(1000);
   PRINTLN("Hello World!");
@@ -1514,21 +1792,30 @@ void setup()
 #endif // WUMPUS_ROBOBRRD
 
   // Define custom icons
-
+#ifndef WUMPUS_NOWUMPUS
   lcd.createChar(WUMPUS_ICON_IDX, icons[WUMPUS_ICON_IDX]);
   lcd.createChar(BAT_ICON_IDX,    icons[BAT_ICON_IDX]);
   lcd.createChar(PIT_ICON_IDX,    icons[PIT_ICON_IDX]);
   lcd.createChar(ARROW_ICON_IDX,  icons[ARROW_ICON_IDX]);
+#endif
 
   lcd.clear();
 
-  setLight(TEAL);
+  setLight(
+#if defined(WUMPUS_ROBOBRRD) && defined(ROBOBRRD_HAS_GPS)
+    SET(m_clock_color)
+#else
+    TEAL
+#endif
+  );
 
   // Initial game state
 #if defined(WUMPUS_ROBOBRRD) && defined(ROBOBRRD_HAS_GPS)
-  state = show_clock;
-#else
+  state = init_clock;
+#elif !defined(WUMPUS_NOWUMPUS)
   state = begin_splash_screen;
+#else
+  for(;;);
 #endif
 }
 
@@ -1554,6 +1841,10 @@ void loop()
 
   // Read in which buttons were clicked
   read_button_clicks();
+
+#if defined(WUMPUS_ROBOBRRD) && defined(ROBOBRRD_HAS_GPS)
+  check_brightness();
+#endif
 
   // Call current state function
   state();
